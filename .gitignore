@@ -1,0 +1,44 @@
+# General / OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Node / Frontend build
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/*.local
+frontend/.env
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+frontend/.env.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Python / Backend environment & cache
+backend/.venv/
+backend/.env
+backend/__pycache__/
+backend/**/*.pyc
+backend/**/*.pyo
+backend/**/*.pyd
+backend/.pytest_cache/
+backend/.coverage
+backend/htmlcov/
+backend/.mypy_cache/
+backend/.ruff_cache/
+
+# Project-specific large files / caches
+backend/models/pocket-tts/
+backend/voices/output*.wav
+backend/voices/fallback*.mp3
+backend/voices/jarvis.wav
+backend/voices/test_pocket.wav
