@@ -17,7 +17,8 @@
 ---
 
 > **Screenshot / Demo**
-> *(Add a screenshot or GIF here — drag an image into this file on GitHub)*
+<img width="2920" height="1520" alt="image" src="https://github.com/user-attachments/assets/e5d98dcc-bdb4-4797-9281-84a28c8141bb" />
+
 
 ---
 
