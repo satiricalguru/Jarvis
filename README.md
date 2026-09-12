@@ -1,6 +1,6 @@
 <div align="center">
 
-  <img src="assets/jarvis-logo.png" alt="Project J.A.R.V.I.S." width="150" />
+  <img src="assets/jarvis-icon.png" alt="Project J.A.R.V.I.S." width="150" />
 
   <br/><br/>
 
