@@ -1,6 +1,6 @@
 <div align="center">
 
-  <img src="assets/jarvis-banner.png" alt="Project J.A.R.V.I.S." width="800" style="max-width: 100%; border-radius: 12px; box-shadow: 0 0 30px rgba(0, 229, 255, 0.2);" />
+  <img src="assets/jarvis-banner.png" alt="Project J.A.R.V.I.S." width="320" style="max-width: 100%; border-radius: 10px; box-shadow: 0 0 20px rgba(0, 229, 255, 0.25);" />
 
   <br/><br/>
 
