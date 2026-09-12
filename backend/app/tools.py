@@ -19,6 +19,7 @@ Returns a human-readable status string (or None if no action matched).
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import shutil
@@ -60,6 +61,52 @@ def _expand(path_str: str) -> Path:
     if not p.is_absolute():
         p = DESKTOP / p
     return p
+
+
+def _is_safe_to_delete(path: Path) -> bool:
+    """Ensure path is within safe directories (Desktop, Documents, Downloads) and not protected."""
+    try:
+        resolved = path.resolve()
+    except Exception:
+        return False
+
+    home = Path.home().resolve()
+    desktop = (home / "Desktop").resolve()
+    documents = (home / "Documents").resolve()
+    downloads = (home / "Downloads").resolve()
+
+    # Never allow deleting root, home directory, or top-level user directories
+    if resolved in (Path("/"), home, desktop, documents, downloads):
+        return False
+
+    # Must be strictly within Desktop, Documents, or Downloads
+    is_in_safe_area = any(
+        resolved.is_relative_to(safe_dir)
+        for safe_dir in (desktop, documents, downloads)
+    )
+    if not is_in_safe_area:
+        return False
+
+    # Block protected paths (e.g. current project or dotfiles)
+    base_dir = Path(__file__).resolve().parent.parent.parent.resolve()
+    if resolved == base_dir or resolved.is_relative_to(base_dir):
+        return False
+
+    if any(part.startswith(".") for part in resolved.parts):
+        return False
+
+    return True
+
+
+def _trash_item(target: Path) -> bool:
+    """Use macOS AppleScript / Finder to move item to Trash safely (recoverable)."""
+    try:
+        script = f'tell application "Finder" to delete POSIX file "{target}"'
+        res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=5)
+        return res.returncode == 0
+    except Exception:
+        return False
+
 
 
 # ──────────────────────────────────────────────
@@ -169,16 +216,22 @@ def try_open_app(message: str) -> str | None:
     if raw in _SHORTHAND or "." in raw or raw.startswith("http"):
         return None
 
+    has_explicit_app_keyword = bool(re.search(r"\b(?:app|application)\b", message, re.IGNORECASE))
+
     app = _APP_ALIASES.get(raw)
     if not app:
-        # Try partial match
+        # Try partial match only for explicit app aliases
         for key, val in _APP_ALIASES.items():
-            if raw in key or key in raw:
+            if raw == key or (len(raw) >= 4 and raw in key):
                 app = val
                 break
+
     if not app:
-        # Capitalise and try anyway (user may type exact app name)
-        app = raw.title()
+        # Only attempt title-casing if the user explicitly said "app" or "application"
+        if has_explicit_app_keyword:
+            app = raw.title()
+        else:
+            return None
 
     result = _run(["open", "-a", app])
     if result and "Unable to find" in result:
@@ -349,25 +402,43 @@ _DELETE_PAT = re.compile(
     re.IGNORECASE,
 )
 
+_QUESTION_PAT = re.compile(
+    r"\b(?:how\s+(?:to|can|do|does)|why\s+(?:to|should|would)|can\s+you\s+explain|what\s+happens\s+if|should\s+i)\b",
+    re.IGNORECASE,
+)
+
 
 def try_delete(message: str) -> str | None:
+    if _QUESTION_PAT.search(message):
+        return None
+
     m = _DELETE_PAT.search(message)
     if not m:
         return None
     name = m.group(1).strip()
+    if name.lower() in ("files", "everything", "all", "something", "bugs", "errors", "data", "history"):
+        return None
+
     target = _expand(name)
     if not target.exists():
         return f"'{target}' does not exist, Sir."
-    
+
+    if not _is_safe_to_delete(target):
+        return f"Permission denied: '{target}' is protected and cannot be deleted, Sir."
+
     global _LAST_REFERENCED_FILE
     if _LAST_REFERENCED_FILE == target:
         _LAST_REFERENCED_FILE = None
+
+    if _trash_item(target):
+        return f"Moved '{target}' to Trash, Sir."
 
     if target.is_dir():
         shutil.rmtree(target)
     else:
         target.unlink()
     return f"Deleted '{target}', Sir."
+
 
 
 # ──────────────────────────────────────────────
@@ -677,7 +748,7 @@ def try_list_dir(message: str) -> str | None:
 # ──────────────────────────────────────────────
 
 _SCREENSHOT_PAT = re.compile(
-    r"\b(?:take|capture|screenshot|grab screen|screen ?shot)\b",
+    r"\b(?:(?:take|capture|grab)\s+(?:a\s+)?(?:screen ?shot|screen)|screen ?shot)\b",
     re.IGNORECASE,
 )
 
@@ -698,7 +769,7 @@ def try_screenshot(message: str) -> str | None:
 # ──────────────────────────────────────────────
 
 _SYSINFO_PAT = re.compile(
-    r"\b(?:battery|memory|ram|cpu|processor|disk|storage|system info|system status)\b",
+    r"\b(?:check|show|get|display|what(?:'s| is)(?: the)?|status of(?: the)?)\s+(?:the\s+)?(?:battery|memory|ram|cpu|processor|disk|storage|system(?: info| status)?)\b|\b(?:system info|system status)\b",
     re.IGNORECASE,
 )
 
@@ -708,30 +779,29 @@ def try_system_info(message: str) -> str | None:
         return None
     low = message.lower()
     parts: list[str] = []
+    is_general = "system info" in low or "system status" in low
 
-    if any(k in low for k in ("battery",)):
+    if is_general or any(k in low for k in ("battery",)):
         out = _run(["pmset", "-g", "batt"])
-        # Extract percentage
         pct_m = re.search(r"(\d+)%;", out)
         pct = pct_m.group(1) + "%" if pct_m else "unknown"
         parts.append(f"Battery: {pct}")
 
-    if any(k in low for k in ("memory", "ram")):
+    if is_general or any(k in low for k in ("memory", "ram")):
         out = _run(["vm_stat"])
-        # Parse pages free
         free_m = re.search(r"Pages free:\s+(\d+)", out)
         if free_m:
             free_pages = int(free_m.group(1))
             free_mb = (free_pages * 4096) / (1024 ** 2)
             parts.append(f"Free memory: {free_mb:.0f} MB")
 
-    if any(k in low for k in ("cpu", "processor")):
+    if is_general or any(k in low for k in ("cpu", "processor")):
         out = _run(["top", "-l", "1", "-s", "0", "-n", "0"])
         cpu_m = re.search(r"CPU usage:\s+(.+)", out)
         if cpu_m:
             parts.append(f"CPU: {cpu_m.group(1)}")
 
-    if any(k in low for k in ("disk", "storage")):
+    if is_general or any(k in low for k in ("disk", "storage")):
         out = _run(["df", "-h", "/"])
         lines = out.splitlines()
         if len(lines) >= 2:
@@ -753,23 +823,23 @@ async def dispatch_action(
     Try every action handler in priority order.
     Returns the first non-None status string, or None if nothing matched.
     """
-    res = try_open_app(message)
+    res = await asyncio.to_thread(try_open_app, message)
     if res is not None:
         return res
 
-    res = try_open_website(message)
+    res = await asyncio.to_thread(try_open_website, message)
     if res is not None:
         return res
 
-    res = try_create_file(message)
+    res = await asyncio.to_thread(try_create_file, message)
     if res is not None:
         return res
 
-    res = try_create_folder(message)
+    res = await asyncio.to_thread(try_create_folder, message)
     if res is not None:
         return res
 
-    res = try_delete(message)
+    res = await asyncio.to_thread(try_delete, message)
     if res is not None:
         return res
 
@@ -777,20 +847,21 @@ async def dispatch_action(
     if res is not None:
         return res
 
-    res = try_read_file(message)
+    res = await asyncio.to_thread(try_read_file, message)
     if res is not None:
         return res
 
-    res = try_list_dir(message)
+    res = await asyncio.to_thread(try_list_dir, message)
     if res is not None:
         return res
 
-    res = try_screenshot(message)
+    res = await asyncio.to_thread(try_screenshot, message)
     if res is not None:
         return res
 
-    res = try_system_info(message)
+    res = await asyncio.to_thread(try_system_info, message)
     if res is not None:
         return res
 
     return None
+

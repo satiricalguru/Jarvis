@@ -1,3 +1,4 @@
+import asyncio
 import os
 import tempfile
 from pathlib import Path
@@ -28,9 +29,11 @@ def get_jarvis_prefix_path() -> Path | None:
 async def synthesize_speech_bytes(text: str, engine: str = "auto") -> tuple[bytes, str]:
     requested = engine.lower().strip()
     if requested == "gtts":
-        return _synthesize_with_gtts(text), "gtts"
+        res = await asyncio.to_thread(_synthesize_with_gtts, text)
+        return res, "gtts"
     if requested == "coqui":
-        return _synthesize_with_coqui(text), "coqui"
+        res = await asyncio.to_thread(_synthesize_with_coqui, text)
+        return res, "coqui"
     if requested in {"hf", "huggingface"}:
         hf_token = os.getenv("HUGGINGFACE_TOKEN")
         hf_model = os.getenv("HF_TTS_MODEL", "kyutai/pocket-tts")
@@ -49,13 +52,14 @@ async def synthesize_speech_bytes(text: str, engine: str = "auto") -> tuple[byte
             pass
 
     try:
-        audio = _synthesize_with_coqui(text)
+        audio = await asyncio.to_thread(_synthesize_with_coqui, text)
         return audio, "coqui"
     except Exception:
         pass
 
-    audio = _synthesize_with_gtts(text)
+    audio = await asyncio.to_thread(_synthesize_with_gtts, text)
     return audio, "gtts"
+
 
 
 async def _synthesize_with_huggingface(text: str, model: str, token: str) -> bytes:
@@ -79,7 +83,7 @@ async def _synthesize_with_huggingface(text: str, model: str, token: str) -> byt
 
 def _synthesize_with_coqui(text: str) -> bytes:
     try:
-        from TTS.api import TTS
+        from TTS.api import TTS  # type: ignore
     except ImportError as exc:
         raise RuntimeError("Coqui TTS is not installed") from exc
 
@@ -102,7 +106,10 @@ def _synthesize_with_coqui(text: str) -> bytes:
 def _synthesize_with_gtts(text: str) -> bytes:
     from io import BytesIO
 
-    from gtts import gTTS
+    try:
+        from gtts import gTTS  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError("gTTS is not installed") from exc
 
     stream = BytesIO()
     gTTS(text=text, lang="en").write_to_fp(stream)

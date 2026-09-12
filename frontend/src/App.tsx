@@ -88,18 +88,20 @@ function App() {
   const [time, setTime]                       = useState(() => new Date())
   const [batteryPercent, setBatteryPercent]   = useState<number | null>(null)
   const [weather, setWeather]                 = useState<{ temp?: number; label?: string }>({})
-  const [locationName, setLocationName]       = useState('Ranchi')
-  const [locationSub, setLocationSub]         = useState('Jharkhand, India')
+  const [locationName, setLocationName]       = useState('Local System')
+  const [locationSub, setLocationSub]         = useState('Online')
   const [providerHealth, setProviderHealth]   = useState({ groq: false, mistral: false, openrouter: false, ollama: false })
   const [fftHistory, setFftHistory]           = useState<Array<{ b: number; m: number; t: number }>>([])
 
-  const [ttsEngine, setTtsEngine]           = useState('unknown')
-  const [ttsStatus, setTtsStatus]           = useState('idle')
-  const [ttsMode, setTtsMode]               = useState('...')
+  const [ttsEngine, setTtsEngine]             = useState('unknown')
+  const [ttsStatus, setTtsStatus]             = useState('idle')
+  const [ttsMode, setTtsMode]                 = useState('...')
   const [pendingAudioUrl, setPendingAudioUrl] = useState<string | null>(null)
+  const [actionStatus, setActionStatus]       = useState<string | null>(null)
 
   const dubbedAudio  = useDubbedAudio()
   const sendLockRef  = useRef(false)
+
 
   // Stable ref for continuousMode so the resultNonce effect never captures stale state
   const continuousModeRef = useRef(continuousMode)
@@ -204,7 +206,9 @@ function App() {
         body: JSON.stringify(body),
       })
       if (!r.ok) {
-        setJarvisReply('JARVIS: Backend offline, Sir.')
+        const errJson = await r.json().catch(() => null)
+        const detail = errJson?.detail || 'Backend unavailable, Sir.'
+        setJarvisReply(`JARVIS: ${detail}`)
         setActiveProvider('offline')
         return
       }
@@ -212,15 +216,19 @@ function App() {
       const reply = data.reply ?? ''
       setJarvisReply(reply)
       setActiveProvider(data.provider ?? '')
+      setActionStatus(data.action_status ?? null)
       setHistory((prev) => [...prev, { role: 'assistant', content: reply }])
 
-      if (data.audio_url) {
+      if (data.audio_url && ttsEnabled) {
         setTtsEngine(data.tts_provider ?? 'unknown')
         setPendingAudioUrl(data.audio_url)
         setTtsStatus(`queued: ${data.tts_provider ?? '?'} @ ${data.audio_url}`)
       } else {
-        setTtsEngine('none')
-        setTtsStatus('no audio from backend')
+        setTtsEngine(data.tts_provider ?? 'none')
+        setTtsStatus(ttsEnabled ? 'no audio from backend' : 'voice disabled')
+        if (continuousModeRef.current) {
+          setTimeout(() => startListening(), 600)
+        }
       }
     } catch {
       setJarvisReply('JARVIS: Network issue detected, Sir.')
@@ -229,7 +237,7 @@ function App() {
       sendLockRef.current = false
       setIsThinking(false)
     }
-  }, [history, selectedProvider, selectedModel, dubbedAudio])
+  }, [history, selectedProvider, selectedModel, dubbedAudio, ttsEnabled, startListening])
 
 
   // Stop audio immediately when user starts speaking
@@ -240,14 +248,9 @@ function App() {
   }, [isListening, dubbedAudio])
 
   // Voice transcript → send
-  // Uses continuousModeRef (not continuousMode state) to avoid stale closure
-  // that would silently drop mic restarts when the effect captures an old value.
   useEffect(() => {
     if (!transcript.trim()) return
     void sendMessage(transcript)
-    if (continuousModeRef.current) {
-      setTimeout(() => startListening(), 800)
-    }
   }, [resultNonce]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // TTS playback
@@ -274,10 +277,15 @@ function App() {
         setTtsStatus('playback error — check console')
       } finally {
         setPendingAudioUrl(null)
+        // Resume listening in continuous mode only after speech output has completed
+        if (continuousModeRef.current) {
+          setTimeout(() => startListening(), 400)
+        }
       }
     }
     void runPlayback()
-  }, [ttsEnabled, pendingAudioUrl, ttsEngine, ttsMode, strictCloneMode, playVoicePrefix, ttsRate, dubbedAudio])
+  }, [ttsEnabled, pendingAudioUrl, ttsEngine, ttsMode, strictCloneMode, playVoicePrefix, ttsRate, dubbedAudio, startListening])
+
 
   // Configurable Hotkey Listener (supports combos like Meta+J, or single keys like Spacebar / Space)
   const hotkeyPressedRef = useRef(false)
@@ -355,6 +363,7 @@ function App() {
     `INPUT: ${holdToTalk ? 'Hold-To-Talk' : 'Toggle'} · HOTKEY: ${hotkey}`,
     isListening ? 'STATUS: Listening, Sir...' : isThinking ? 'STATUS: Processing...' : 'STATUS: Standing by, Sir.',
     speechError ? `STT ERR: ${speechError}` : 'STT: no error',
+    actionStatus ? `ACTION: ${actionStatus.slice(0, 90)}` : null,
     `FFT: B${frequencyBands.bass.toFixed(2)} M${frequencyBands.mid.toFixed(2)} T${frequencyBands.treble.toFixed(2)}`,
     transcript ? `USER: ${transcript}` : 'USER: Awaiting command...',
     jarvisReply ? `JARVIS: ${jarvisReply.slice(0, 80)}` : 'JARVIS: Ready to assist, Sir.',
@@ -362,8 +371,9 @@ function App() {
     `TTS ENGINE: ${ttsEngine} · MODE: ${ttsMode}`,
     `TTS STATUS: ${ttsStatus}`,
     `HISTORY: ${history.length} turns`,
-  ], [speechSupported, holdToTalk, hotkey, isListening, isThinking, frequencyBands, speechError,
-      transcript, jarvisReply, activeProvider, selectedModel, ttsEngine, ttsMode, ttsStatus, history])
+  ].filter(Boolean) as string[], [speechSupported, holdToTalk, hotkey, isListening, isThinking, frequencyBands, speechError,
+      actionStatus, transcript, jarvisReply, activeProvider, selectedModel, ttsEngine, ttsMode, ttsStatus, history])
+
 
   const visualVolume = dubbedAudio.isPlaying ? dubbedAudio.amplitude : volumeLevel
   const visualBands  = dubbedAudio.isPlaying ? dubbedAudio.bands     : frequencyBands

@@ -1,3 +1,4 @@
+import asyncio
 import os
 from typing import Any
 
@@ -32,15 +33,13 @@ GENERATE_SYSTEM_PROMPT = (
 
 PROVIDER_MODELS: dict[str, list[dict[str, Any]]] = {
     "groq": [
-        {"id": "llama-3.1-8b-instant",             "name": "Llama 3.1 8B Instant",     "free": True},
         {"id": "llama-3.3-70b-versatile",           "name": "Llama 3.3 70B Versatile",  "free": True},
+        {"id": "llama-3.1-8b-instant",             "name": "Llama 3.1 8B Instant",     "free": True},
         {"id": "llama-3.1-70b-versatile",           "name": "Llama 3.1 70B",             "free": True},
         {"id": "mixtral-8x7b-32768",                "name": "Mixtral 8x7B",              "free": True},
         {"id": "gemma2-9b-it",                      "name": "Gemma 2 9B",                "free": True},
         {"id": "deepseek-r1-distill-llama-70b",     "name": "DeepSeek R1 Distill 70B",  "free": True},
-        {"id": "meta-llama/llama-4-scout-17b-16e-instruct", "name": "Llama 4 Scout 17B","free": True},
-        {"id": "meta-llama/llama-4-maverick-17b-128e-instruct","name": "Llama 4 Maverick","free": True},
-        {"id": "compound-beta",                     "name": "Compound Beta",             "free": True},
+        {"id": "qwen-qwq-32b",                      "name": "Qwen QwQ 32B",              "free": True},
     ],
     "mistral": [
         {"id": "open-mistral-7b",       "name": "Mistral 7B (Open)",    "free": True},
@@ -60,10 +59,11 @@ PROVIDER_MODELS: dict[str, list[dict[str, Any]]] = {
         {"id": "anthropic/claude-3-haiku",                       "name": "Claude 3 Haiku", "free": False},
         {"id": "openai/gpt-4o-mini",                             "name": "GPT-4o Mini",    "free": False},
         {"id": "google/gemini-flash-1.5",                        "name": "Gemini Flash 1.5","free": False},
-        {"id": "anthropic/claude-sonnet-4",                      "name": "Claude Sonnet 4","free": False},
+        {"id": "anthropic/claude-3.5-sonnet",                   "name": "Claude 3.5 Sonnet","free": False},
     ],
     "ollama": [],
 }
+
 
 _PROVIDER_FN: dict = {}  # populated below after fn definitions
 
@@ -74,13 +74,22 @@ def _build_messages(
     message: str,
     history: list[dict[str, str]] | None,
     system_prompt: str = SYSTEM_PROMPT,
+    action_result: str | None = None,
 ) -> list[dict[str, str]]:
-    """Build the full messages array with optional prior turns."""
+    """Build the full messages array with optional prior turns and system action observation."""
     msgs: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
     if history:
         for turn in history[-20:]:   # keep last 20 turns to stay within token limits
             if turn.get("role") in {"user", "assistant"} and turn.get("content"):
                 msgs.append({"role": turn["role"], "content": turn["content"]})
+    if action_result:
+        msgs.append({
+            "role": "system",
+            "content": (
+                f"[SYSTEM OBSERVATION: The backend executed an action with the following result:\n{action_result}\n"
+                "Incorporate this factual result into your response to the user as JARVIS naturally and concisely, addressing the user as Sir.]"
+            ),
+        })
     msgs.append({"role": "user", "content": message})
     return msgs
 
@@ -90,13 +99,14 @@ async def ask_groq(
     model: str | None = None,
     history: list[dict[str, str]] | None = None,
     system_prompt: str = SYSTEM_PROMPT,
+    action_result: str | None = None,
 ) -> str:
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
         raise RuntimeError("GROQ_API_KEY is missing")
     payload = {
         "model": model or os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
-        "messages": _build_messages(message, history, system_prompt),
+        "messages": _build_messages(message, history, system_prompt, action_result=action_result),
     }
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     async with httpx.AsyncClient(timeout=30) as client:
@@ -115,13 +125,14 @@ async def ask_mistral(
     model: str | None = None,
     history: list[dict[str, str]] | None = None,
     system_prompt: str = SYSTEM_PROMPT,
+    action_result: str | None = None,
 ) -> str:
     api_key = os.getenv("MISTRAL_API_KEY")
     if not api_key:
         raise RuntimeError("MISTRAL_API_KEY is missing")
     payload = {
         "model": model or os.getenv("MISTRAL_MODEL", "open-mistral-7b"),
-        "messages": _build_messages(message, history, system_prompt),
+        "messages": _build_messages(message, history, system_prompt, action_result=action_result),
     }
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     async with httpx.AsyncClient(timeout=30) as client:
@@ -140,13 +151,14 @@ async def ask_openrouter(
     model: str | None = None,
     history: list[dict[str, str]] | None = None,
     system_prompt: str = SYSTEM_PROMPT,
+    action_result: str | None = None,
 ) -> str:
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is missing")
     payload = {
         "model": model or os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.1-8b-instruct:free"),
-        "messages": _build_messages(message, history, system_prompt),
+        "messages": _build_messages(message, history, system_prompt, action_result=action_result),
     }
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     async with httpx.AsyncClient(timeout=30) as client:
@@ -165,6 +177,7 @@ async def ask_ollama(
     model: str | None = None,
     history: list[dict[str, str]] | None = None,
     system_prompt: str = SYSTEM_PROMPT,
+    action_result: str | None = None,
 ) -> str:
     candidates = (
         [model] if model
@@ -177,7 +190,7 @@ async def ask_ollama(
         for m in candidates:
             payload = {
                 "model": m,
-                "messages": _build_messages(message, history, system_prompt),
+                "messages": _build_messages(message, history, system_prompt, action_result=action_result),
                 "stream": False,
             }
             try:
@@ -203,20 +216,26 @@ async def resolve_chat(
     model: str | None = None,
     history: list[dict[str, str]] | None = None,
     system_prompt: str = SYSTEM_PROMPT,
+    action_result: str | None = None,
 ) -> tuple[str, str]:
     if provider and provider in _PROVIDER_FN:
-        reply = await _PROVIDER_FN[provider](message, model, history, system_prompt=system_prompt)
+        reply = await _PROVIDER_FN[provider](
+            message, model, history, system_prompt=system_prompt, action_result=action_result
+        )
         return reply, provider
 
     last_exc: Exception = RuntimeError("No providers configured")
     for name in _FALLBACK_ORDER:
         fn = _PROVIDER_FN[name]
         try:
-            reply = await fn(message, None, history, system_prompt=system_prompt)
+            reply = await fn(
+                message, None, history, system_prompt=system_prompt, action_result=action_result
+            )
             return reply, name
         except Exception as exc:
             last_exc = exc
     raise last_exc
+
 
 
 # ── Model catalogue helpers ──────────────────────────────────
@@ -247,47 +266,65 @@ async def get_provider_health() -> dict[str, bool]:
     status: dict[str, bool] = {
         "groq": False, "mistral": False, "openrouter": False, "ollama": False,
     }
-    groq_key = os.getenv("GROQ_API_KEY")
-    if groq_key:
-        try:
-            async with httpx.AsyncClient(timeout=6) as c:
-                r = await c.get(
-                    "https://api.groq.com/openai/v1/models",
-                    headers={"Authorization": f"Bearer {groq_key}"},
-                )
-                status["groq"] = r.is_success
-        except Exception:
-            pass
 
-    mistral_key = os.getenv("MISTRAL_API_KEY")
-    if mistral_key:
+    async def _check_groq(client: httpx.AsyncClient) -> bool:
+        key = os.getenv("GROQ_API_KEY")
+        if not key:
+            return False
         try:
-            async with httpx.AsyncClient(timeout=6) as c:
-                r = await c.get(
-                    "https://api.mistral.ai/v1/models",
-                    headers={"Authorization": f"Bearer {mistral_key}"},
-                )
-                status["mistral"] = r.is_success
+            r = await client.get(
+                "https://api.groq.com/openai/v1/models",
+                headers={"Authorization": f"Bearer {key}"},
+            )
+            return r.is_success
         except Exception:
-            pass
+            return False
 
-    openrouter_key = os.getenv("OPENROUTER_API_KEY")
-    if openrouter_key:
+    async def _check_mistral(client: httpx.AsyncClient) -> bool:
+        key = os.getenv("MISTRAL_API_KEY")
+        if not key:
+            return False
         try:
-            async with httpx.AsyncClient(timeout=6) as c:
-                r = await c.get(
-                    "https://openrouter.ai/api/v1/models",
-                    headers={"Authorization": f"Bearer {openrouter_key}"},
-                )
-                status["openrouter"] = r.is_success
+            r = await client.get(
+                "https://api.mistral.ai/v1/models",
+                headers={"Authorization": f"Bearer {key}"},
+            )
+            return r.is_success
         except Exception:
-            pass
+            return False
 
-    try:
-        async with httpx.AsyncClient(timeout=4) as c:
-            r = await c.get("http://localhost:11434/api/tags")
-            status["ollama"] = r.is_success
-    except Exception:
-        pass
+    async def _check_openrouter(client: httpx.AsyncClient) -> bool:
+        key = os.getenv("OPENROUTER_API_KEY")
+        if not key:
+            return False
+        try:
+            r = await client.get(
+                "https://openrouter.ai/api/v1/models",
+                headers={"Authorization": f"Bearer {key}"},
+            )
+            return r.is_success
+        except Exception:
+            return False
+
+    async def _check_ollama(client: httpx.AsyncClient) -> bool:
+        try:
+            r = await client.get("http://localhost:11434/api/tags")
+            return r.is_success
+        except Exception:
+            return False
+
+    async with httpx.AsyncClient(timeout=4) as client:
+        results = await asyncio.gather(
+            _check_groq(client),
+            _check_mistral(client),
+            _check_openrouter(client),
+            _check_ollama(client),
+            return_exceptions=True,
+        )
+
+    providers = ["groq", "mistral", "openrouter", "ollama"]
+    for prov, res in zip(providers, results):
+        status[prov] = bool(res) if isinstance(res, bool) else False
 
     return status
+

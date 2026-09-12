@@ -24,7 +24,18 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 BASE_DIR      = Path(__file__).resolve().parent.parent
 VOICES_DIR    = BASE_DIR / "voices"
-REFERENCE_WAV = VOICES_DIR / "jarvis.wav"
+
+def get_reference_wav() -> Path:
+    """Find reference jarvis.wav in voices/ or assets/."""
+    voices_wav = VOICES_DIR / "jarvis.wav"
+    if voices_wav.exists():
+        return voices_wav
+    assets_wav = BASE_DIR / "assets" / "jarvis.wav"
+    if assets_wav.exists():
+        return assets_wav
+    return voices_wav
+
+REFERENCE_WAV = get_reference_wav()
 
 # Best deep male catalog voice
 CATALOG_VOICE = "marius"
@@ -34,10 +45,7 @@ _HAS_CLONING = False  # True only after we've verified cloning works at runtime
 
 
 def _ensure_hf_token() -> str:
-    token = os.getenv("HUGGINGFACE_TOKEN", "").strip()
-    if not token:
-        raise RuntimeError("HUGGINGFACE_TOKEN is not set. Add it to backend/.env")
-    return token
+    return os.getenv("HUGGINGFACE_TOKEN", "").strip()
 
 
 def _load_model():
@@ -46,7 +54,13 @@ def _load_model():
         return _MODEL
 
     token = _ensure_hf_token()
-    login(token=token, add_to_git_credential=False)
+    if token:
+        try:
+            login(token=token, add_to_git_credential=False)
+        except Exception as exc:
+            logger.warning(f"Hugging Face login with token failed: {exc}")
+    else:
+        logger.info("No HUGGINGFACE_TOKEN provided; attempting to load public pocket-tts weights.")
 
     try:
         from pocket_tts import TTSModel  # type: ignore
@@ -60,11 +74,12 @@ def _load_model():
     # pocket-tts doesn't expose a boolean flag; we probe by trying to call
     # get_state_for_audio_prompt with an actual WAV file.  If it raises, the
     # gated weights aren't available and we fall back to catalog mode.
-    if REFERENCE_WAV.exists():
+    ref_wav = get_reference_wav()
+    if ref_wav.exists():
         try:
-            _MODEL.get_state_for_audio_prompt(str(REFERENCE_WAV))
+            _MODEL.get_state_for_audio_prompt(str(ref_wav))
             _HAS_CLONING = True
-            logger.info("pocket-tts: voice-cloning probe PASSED ✓")
+            logger.info(f"pocket-tts: voice-cloning probe PASSED with {ref_wav.name} ✓")
         except Exception as probe_exc:
             _HAS_CLONING = False
             logger.info(
@@ -75,7 +90,7 @@ def _load_model():
     else:
         _HAS_CLONING = False
         logger.info(
-            f"No reference WAV at {REFERENCE_WAV}. "
+            f"No reference WAV at {ref_wav}. "
             f"Using catalog voice '{CATALOG_VOICE}'."
         )
 
@@ -107,7 +122,7 @@ def generate_voice(text: str, out_path: Path | None = None) -> Path:
     Generate speech.  Writes to out_path (or VOICES_DIR/output.wav by default).
 
     Tries:
-      1. Voice cloning from REFERENCE_WAV (needs gated model access)
+      1. Voice cloning from reference WAV (needs gated model access)
       2. Catalog voice 'marius' (always works with non-gated model)
     """
     if out_path is None:
@@ -115,14 +130,15 @@ def generate_voice(text: str, out_path: Path | None = None) -> Path:
 
     model     = _load_model()
     mode_used = "unknown"
+    ref_wav   = get_reference_wav()
 
     try:
-        if _HAS_CLONING and REFERENCE_WAV.exists():
-            state = model.get_state_for_audio_prompt(str(REFERENCE_WAV))
+        if _HAS_CLONING and ref_wav.exists():
+            state = model.get_state_for_audio_prompt(str(ref_wav))
             audio = model.generate_audio(state, text)
             _audio_to_wav(audio, model.sample_rate, out_path)
             mode_used = "voice-cloning"
-            logger.info("pocket-tts: voice cloning from jarvis.wav ✓")
+            logger.info(f"pocket-tts: voice cloning from {ref_wav.name} ✓")
         else:
             raise ValueError("cloning unavailable, using catalog voice")
 
@@ -131,6 +147,7 @@ def generate_voice(text: str, out_path: Path | None = None) -> Path:
             f"pocket-tts: cloning skipped ({cloning_exc}), "
             f"falling back to catalog voice '{CATALOG_VOICE}'"
         )
+
         try:
             state = model.get_state_for_audio_prompt(CATALOG_VOICE)
             audio = model.generate_audio(state, text)

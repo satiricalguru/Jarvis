@@ -7,10 +7,20 @@ type TerminalLogProps = {
 }
 
 export function TerminalLog({ lines, onToggle, onClearHistory }: TerminalLogProps) {
+  const containerRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const prevLineCountRef = useRef(lines.length)
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const el = containerRef.current
+    if (!el) return
+    const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 50
+    const lineCountChanged = lines.length !== prevLineCountRef.current
+    prevLineCountRef.current = lines.length
+
+    if (isNearBottom || lineCountChanged) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
   }, [lines])
 
   return (
@@ -38,7 +48,7 @@ export function TerminalLog({ lines, onToggle, onClearHistory }: TerminalLogProp
           </button>
         )}
       </div>
-      <div className="max-h-40 overflow-y-auto space-y-0.5 pr-1 font-mono text-[11px] text-emerald-300/95">
+      <div ref={containerRef} className="max-h-40 overflow-y-auto space-y-0.5 pr-1 font-mono text-[11px] text-emerald-300/95">
         {lines.map((line, i) => (
           <p key={i} className="whitespace-pre-wrap leading-relaxed">
             <span className="text-emerald-400/40 mr-1.5">{String(i + 1).padStart(2, '0')}</span>
@@ -50,3 +60,4 @@ export function TerminalLog({ lines, onToggle, onClearHistory }: TerminalLogProp
     </section>
   )
 }
+

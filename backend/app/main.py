@@ -1,4 +1,6 @@
+import asyncio
 import os
+import time
 import uuid
 from pathlib import Path
 
@@ -22,11 +24,12 @@ app = FastAPI(title="Project JARVIS API")
 app.include_router(telegram_router)
 
 
-# ── CORS fix: wildcard origin is incompatible with credentials=True ──────────
-# Use explicit list of allowed origins instead.
+# ── CORS configuration ────────────────────────────────────────────────────────
 _ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5174",
     "http://localhost:4173",
     "http://127.0.0.1:4173",
     "http://localhost:3000",
@@ -36,10 +39,33 @@ _ALLOWED_ORIGINS = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_ALLOWED_ORIGINS,
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _prune_audio_cache() -> None:
+    """Retain only the last 25 audio files and delete generated files older than 30 minutes."""
+    try:
+        if not VOICES_DIR.exists():
+            return
+        files = sorted(
+            [p for p in VOICES_DIR.iterdir() if p.is_file() and p.name != "jarvis.wav"],
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        now = time.time()
+        for i, p in enumerate(files):
+            if i >= 25 or (now - p.stat().st_mtime > 1800):
+                try:
+                    p.unlink(missing_ok=True)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
 
 
 # ─── Health ──────────────────────────────────────────────────────────────────
@@ -108,12 +134,21 @@ async def chat(request: ChatRequest):
         model=request.model or None,
     )
 
-    reply, provider = await resolve_chat(
-        request.message,
-        provider=request.provider or None,
-        model=request.model or None,
-        history=request.history or [],
-    )
+    try:
+        reply, provider = await resolve_chat(
+            request.message,
+            provider=request.provider or None,
+            model=request.model or None,
+            history=request.history or [],
+            action_result=action_status,
+        )
+    except Exception as chat_exc:
+        # Graceful fallback: return a helpful response to the user instead of a 500 error
+        reply = (
+            f"Sir, I could not reach any configured AI provider ({chat_exc}). "
+            "Please check your internet connection, verify your API keys in Settings, or start Ollama locally."
+        )
+        provider = "system-fallback"
 
     tts_provider: str | None = None
     audio_url: str | None    = None
@@ -125,7 +160,7 @@ async def chat(request: ChatRequest):
 
     # 1) Try pocket-tts (WAV, voice cloning or catalog voice)
     try:
-        generate_voice(reply, out_path=wav_path)
+        await asyncio.to_thread(generate_voice, reply, out_path=wav_path)
         tts_provider = "pocket-tts"
         audio_url    = f"/audio/{wav_path.name}"
     except Exception as pocket_exc:
@@ -135,11 +170,11 @@ async def chat(request: ChatRequest):
             VOICES_DIR.mkdir(parents=True, exist_ok=True)
 
             if fallback_provider == "gtts":
-                mp3_path.write_bytes(fallback_bytes)
+                await asyncio.to_thread(mp3_path.write_bytes, fallback_bytes)
                 tts_provider = "gtts"
                 audio_url    = f"/audio/{mp3_path.name}"
             else:
-                wav_path.write_bytes(fallback_bytes)
+                await asyncio.to_thread(wav_path.write_bytes, fallback_bytes)
                 tts_provider = fallback_provider
                 audio_url    = f"/audio/{wav_path.name}"
 
@@ -150,6 +185,9 @@ async def chat(request: ChatRequest):
                 f"pocket-tts: {pocket_exc}; all TTS fallbacks failed: {fallback_exc}"
             )
 
+    # Prune old generated audio files in background
+    asyncio.create_task(asyncio.to_thread(_prune_audio_cache))
+
     return ChatResponse(
         reply=reply,
         provider=provider,
@@ -158,6 +196,7 @@ async def chat(request: ChatRequest):
         audio_url=audio_url,
         tts_provider=tts_provider,
     )
+
 
 
 # ─── TTS ──────────────────────────────────────────────────────────────────────
@@ -186,17 +225,19 @@ async def tts_prefix():
 
 @app.get("/tts/mode")
 async def tts_mode():
-    from .voice_engine import _HAS_CLONING, CATALOG_VOICE, REFERENCE_WAV
+    from .voice_engine import _HAS_CLONING, CATALOG_VOICE, get_reference_wav
+    ref_wav = get_reference_wav()
     return {
         "voice_cloning_available": _HAS_CLONING,
-        "reference_wav_exists":    REFERENCE_WAV.exists(),
+        "reference_wav_exists":    ref_wav.exists(),
         "catalog_voice":           CATALOG_VOICE,
         "active_mode": (
             "voice-cloning"
-            if (_HAS_CLONING and REFERENCE_WAV.exists())
+            if (_HAS_CLONING and ref_wav.exists())
             else f"catalog:{CATALOG_VOICE}"
         ),
     }
+
 
 
 # ─── Dynamic audio serving ───────────────────────────────────────────────────
