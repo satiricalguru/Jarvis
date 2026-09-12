@@ -1,6 +1,7 @@
 # Project J.A.R.V.I.S. 🤖
 
 <p align="center">
+  <a href="https://github.com/satiricalguru/Jarvis/stargazers"><img src="https://img.shields.io/github/stars/satiricalguru/Jarvis?style=flat&color=ffd700&logo=github" alt="Stars" /></a>
   <img src="https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white" />
   <img src="https://img.shields.io/badge/Node.js-18%2B-green?logo=node.js&logoColor=white" />
   <img src="https://img.shields.io/badge/FastAPI-backend-009688?logo=fastapi&logoColor=white" />
@@ -13,6 +14,8 @@
   A sci-fi AI assistant with a holographic React + Three.js interface and a FastAPI brain.<br/>
   Voice-activated · LLM-agnostic · Real macOS system actions · Zero-shot voice cloning
 </p>
+
+> 🌟 **Enjoying Project J.A.R.V.I.S.? If this project helped or inspired you, please consider dropping a star ⭐!**
 
 ---
 
